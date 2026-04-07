@@ -22,7 +22,10 @@ jobs:
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H -t rsa github.com >> ~/.ssh/known_hosts
-
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        
       - name: Terraform Init
         working-directory: ./task1
         run: terraform init
