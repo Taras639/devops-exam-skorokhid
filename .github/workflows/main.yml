@@ -1,0 +1,72 @@
+name: DevOps Part 2 CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    env:
+      DIGITALOCEAN_TOKEN: ${{ secrets.DO_PAT }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H -t rsa github.com >> ~/.ssh/known_hosts
+
+      - name: Terraform Init
+        working-directory: ./task1
+        run: terraform init
+
+      - name: Terraform Plan (Validation)
+        working-directory: ./task1
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        working-directory: ./task1
+        run: terraform apply -auto-approve tfplan
+
+      - name: Get Droplet IP and Create Ansible Inventory
+        run: |
+          cd task1
+          DROPLET_IP=$(terraform output -raw droplet_ip)
+          cd ../task2
+          echo "$DROPLET_IP ansible_user=root ansible_ssh_common_args='-o StrictHostKeyChecking=no'" > inventory.ini
+
+      - name: Wait for SSH to be ready
+        run: sleep 30
+
+      - name: Ansible Check (Validation)
+        working-directory: ./task2
+        run: ansible-playbook -i inventory.ini playbook.yml --check
+
+      - name: Ansible Apply
+        working-directory: ./task2
+        run: ansible-playbook -i inventory.ini playbook.yml
+
+      - name: Deploy Application to Kubernetes
+        run: |
+          cd task1
+          DROPLET_IP=$(terraform output -raw droplet_ip)
+          cd ../task3
+          
+          # Копіювання маніфестів на ВМ
+          scp -o StrictHostKeyChecking=no -r ./* root@$DROPLET_IP:/root/
+          
+          # Запуск команд на віддаленій машині
+          ssh -o StrictHostKeyChecking=no root@$DROPLET_IP << 'EOF'
+            kubectl create namespace dev-skorokhid --dry-run=client -o yaml | kubectl apply -f -
+            kubectl apply -f dev-deployment.yaml -n dev-skorokhid
+            
+            kubectl create namespace release-skorokhid --dry-run=client -o yaml | kubectl apply -f -
+            kubectl apply -f release-deployment.yaml -n release-skorokhid
+          EOF
